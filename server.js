@@ -129,7 +129,10 @@ const { ethers } = require("ethers");
 const { WebSocketServer } = require("ws");
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:3000", "https://ucscan.net"],
+  methods: ["GET", "POST"],
+}));
 
 // Providers
 const provider = new ethers.JsonRpcProvider("http://168.231.122.245:8545"); // HTTP for history
@@ -139,7 +142,7 @@ const wsProvider = new ethers.WebSocketProvider("ws://168.231.122.245:8546"); //
 app.get("/transactions", async (req, res) => {
   try {
     const latestBlock = await provider.getBlockNumber();
-    const blockLimit = 5000; // Max blocks to scan
+    const blockLimit = 2000; // Max blocks to scan
     const pageSize = parseInt(req.query.pageSize) || 50; // Default to 50 transactions
     const page = parseInt(req.query.page) || 1; // Default to page 1
     const startBlock = Math.max(latestBlock - blockLimit + 1, 0); // Earliest block
