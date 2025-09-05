@@ -139,53 +139,124 @@ const provider = new ethers.JsonRpcProvider("http://168.231.122.245:8545"); // H
 const wsProvider = new ethers.WebSocketProvider("ws://168.231.122.245:8546"); // WS for live updates
 
 // REST API (previous transactions)
+// app.get("/transactions", async (req, res) => {
+//   try {
+//     const latestBlock = await provider.getBlockNumber();
+//     const blockLimit = 2000; // Max blocks to scan
+//     const pageSize = parseInt(req.query.pageSize) || 50; // Default to 50 transactions
+//     const page = parseInt(req.query.page) || 1; // Default to page 1
+//     const startBlock = Math.max(latestBlock - blockLimit + 1, 0); // Earliest block
+//     let txs = [];
+//     let currentBlock = latestBlock - (page - 1) * 50; // Approximate blocks per page
+
+//     while (txs.length < pageSize && currentBlock >= startBlock) {
+//       try {
+//         const block = await provider.getBlock(currentBlock, false); // Fetch without full txs (hashes only)
+//         if (block && block.transactions.length > 0) {
+//           console.log(`Block ${currentBlock} has ${block.transactions.length} tx hashes`);
+//           const txPromises = block.transactions.map(async (hash) => {
+//             try {
+//               const tx = await provider.getTransaction(hash);
+//               if (!tx || tx.value == null) {
+//                 console.warn(`Skipping invalid tx ${hash}`);
+//                 return null;
+//               }
+//               return {
+//                 hash: tx.hash,
+//                 from: tx.from,
+//                 to: tx.to || null,
+//                 value: ethers.formatEther(tx.value),
+//                 blockNumber: tx.blockNumber,
+//                 timestamp: block.timestamp,
+//               };
+//             } catch (err) {
+//               console.error(`Error fetching tx ${hash}:`, err);
+//               return null;
+//             }
+//           });
+//           const txsInBlock = (await Promise.all(txPromises)).filter((tx) => tx !== null);
+//           txs.push(...txsInBlock);
+//         } else {
+//           console.log(`Block ${currentBlock} is empty or invalid`);
+//         }
+//       } catch (err) {
+//         console.error(`Error fetching block ${currentBlock}:`, err);
+//       }
+//       currentBlock--;
+//     }
+
+//     // Slice to exact pageSize if exceeded
+//     txs = txs.slice(0, pageSize);
+
+//     res.json({
+//       transactions: txs,
+//       total: txs.length,
+//       page,
+//       pageSize,
+//     });
+//   } catch (err) {
+//     console.error("Error in /transactions:", err);
+//     res.status(500).json({ error: "Failed to fetch transactions" });
+//   }
+// });
+
 app.get("/transactions", async (req, res) => {
   try {
     const latestBlock = await provider.getBlockNumber();
-    const blockLimit = 2000; // Max blocks to scan
-    const pageSize = parseInt(req.query.pageSize) || 50; // Default to 50 transactions
-    const page = parseInt(req.query.page) || 1; // Default to page 1
-    const startBlock = Math.max(latestBlock - blockLimit + 1, 0); // Earliest block
-    let txs = [];
-    let currentBlock = latestBlock - (page - 1) * 50; // Approximate blocks per page
 
-    while (txs.length < pageSize && currentBlock >= startBlock) {
-      try {
-        const block = await provider.getBlock(currentBlock, false); // Fetch without full txs (hashes only)
-        if (block && block.transactions.length > 0) {
-          console.log(`Block ${currentBlock} has ${block.transactions.length} tx hashes`);
-          const txPromises = block.transactions.map(async (hash) => {
-            try {
-              const tx = await provider.getTransaction(hash);
-              if (!tx || tx.value == null) {
-                console.warn(`Skipping invalid tx ${hash}`);
+    const batchSize = 2000; // scan in 2k chunks
+    const minTxs = 15;
+    const maxTxs = 50;
+
+    const pageSize = parseInt(req.query.pageSize) || maxTxs;
+    const page = parseInt(req.query.page) || 1;
+
+    let txs = [];
+    let currentBlock = latestBlock;
+    let lowerBound = currentBlock - batchSize;
+
+    while (txs.length < minTxs && currentBlock > 0) {
+      // Walk this batch of 2k blocks
+      for (let i = currentBlock; i > lowerBound && i >= 0; i--) {
+        try {
+          const block = await provider.getBlock(i, false); // only tx hashes
+          if (block && block.transactions.length > 0) {
+            const txPromises = block.transactions.map(async (hash) => {
+              try {
+                const tx = await provider.getTransaction(hash);
+                if (!tx) return null;
+                return {
+                  hash: tx.hash,
+                  from: tx.from,
+                  to: tx.to || null,
+                  value: ethers.formatEther(tx.value),
+                  blockNumber: tx.blockNumber,
+                  timestamp: block.timestamp,
+                };
+              } catch (err) {
+                console.error(`Error fetching tx ${hash}:`, err);
                 return null;
               }
-              return {
-                hash: tx.hash,
-                from: tx.from,
-                to: tx.to || null,
-                value: ethers.formatEther(tx.value),
-                blockNumber: tx.blockNumber,
-                timestamp: block.timestamp,
-              };
-            } catch (err) {
-              console.error(`Error fetching tx ${hash}:`, err);
-              return null;
-            }
-          });
-          const txsInBlock = (await Promise.all(txPromises)).filter((tx) => tx !== null);
-          txs.push(...txsInBlock);
-        } else {
-          console.log(`Block ${currentBlock} is empty or invalid`);
+            });
+
+            const txsInBlock = (await Promise.all(txPromises)).filter(Boolean);
+            txs.push(...txsInBlock);
+
+            if (txs.length >= maxTxs) break; // cap
+          }
+        } catch (err) {
+          console.error(`Error fetching block ${i}:`, err);
         }
-      } catch (err) {
-        console.error(`Error fetching block ${currentBlock}:`, err);
       }
-      currentBlock--;
+
+      if (txs.length >= minTxs) break;
+
+      // move window down another 2k
+      currentBlock = lowerBound;
+      lowerBound = currentBlock - batchSize;
     }
 
-    // Slice to exact pageSize if exceeded
+    // slice strictly to pageSize
     txs = txs.slice(0, pageSize);
 
     res.json({
